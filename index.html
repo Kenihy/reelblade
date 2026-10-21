@@ -3199,7 +3199,8 @@ class UI {
     for (let i = 0; i < 3; i++) {
       const x = W / 2 + (i - 1) * (s + gap);
       roundRect(ctx, x - s / 2 - 6, cy - s / 2 - 6, s + 12, s + 12, 18); ctx.fillStyle = '#1a1028'; ctx.fill(); ctx.lineWidth = 4; ctx.strokeStyle = '#d9a441'; ctx.stroke();
-      const id = SYMBOL_IDS[(Math.floor(t * 3) + i * 5) % SYMBOL_IDS.length];
+      const n = SYMBOL_IDS.length;
+      const id = SYMBOL_IDS[(((Math.floor(t * 3) + i * 5) % n) + n) % n];
       ctx.drawImage(ART.symbolIcon(id), x - s / 2, cy - s / 2, s, s);
     }
     ctx.save(); ctx.translate(W / 2, cy + 130);
@@ -3423,11 +3424,17 @@ class Game {
 
   // ---------------------------------------------------------------- 루프
   frame(ts) {
-    const dt = Math.min(0.05, (ts - this.last) / 1000);
-    this.last = ts;
-    this.update(dt);
-    this.render();
+    // 다음 프레임을 먼저 예약: 한 프레임에서 오류가 나도 게임 루프가 멈추지 않음
     requestAnimationFrame((t) => this.frame(t));
+    // PC 크롬은 첫 프레임 시각이 생성 시각보다 이를 수 있어 음수가 되지 않게 0~0.05초로 제한
+    const dt = clamp((ts - this.last) / 1000, 0, 0.05);
+    this.last = ts;
+    try {
+      this.update(dt);
+      this.render();
+    } catch (err) {
+      if (!this.loggedErr) { this.loggedErr = true; console.error('[ReelBlade] frame error', err); }
+    }
   }
 
   update(dt) {
