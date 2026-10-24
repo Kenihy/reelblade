@@ -124,7 +124,23 @@ const BAL = {
   monsterReel: { spinBase: 0.75, spinStagger: 0.3, hold: 0.9, scale: 1.5 }, // scale: 몬스터·저주 릴 크기 배율
   curseDur: 8,
   elite: { hpMul: 2.2, dmgMul: 1.15, scale: 1.25, expMul: 3 },
-  boss: { first: 120, every: 150 },
+  // 챕터: 10분. 정예 습격(초) · 중간 보스 · 최종 보스(아레나) → 처치 시 클리어
+  chapter: {
+    duration: 600, midBoss: 300,
+    eliteWaves: [120, 240, 360, 480], eliteCount: [2, 2, 3, 3],
+    arenaR: 430,           // 최종 보스 아레나 반지름
+    arenaMaxAlive: 8,      // 아레나 안 잡몹 최대 수
+  },
+  // 피버 스핀: 남은 칸을 모두 돌릴 때 코인이 min개 이상 남으면, 남은 코인을 전부 써서 합체 확률·재회전 한도 상승
+  fever: { min: 3, perCoin: 0.07, maxBonus: 0.35, respin: 8, slow: 0.7 },
+  // 특수기 피격 시 보유 코인 일부를 바닥에 흘림 (주우면 회수)
+  coinDrop: { ratio: 0.3, max: 4, life: 7, pickR: 34, speed: [420, 600] }, // 약 100~150px 흩어짐
+  // 릴 덱 (판마다 초기화)
+  deck: {
+    start: ['wave', 'flame', 'chain', 'knight', 'healer', 'meteor', 'potion', 'bomb', 'shield'],
+    min: 4, max: 10, boostMax: 3,
+  },
+  fusion: { respawn: 12, cometCD: 9, paladinShieldCD: 7 }, // 합성 심볼 (판 끝까지 지속)
   abilityDur: 15,
   heroDur: 20,
   heroLand: { radius: 110, dmg: 10, atkMul: 0.8, knock: 750, slow: 1.0 }, // 영웅 착지 충격파 (넉백 약 75px) + 1초 슬로우
@@ -153,8 +169,22 @@ const SYMBOLS = {
   potion: { cat: 'item',   name: '회복 물약',    w: 7 },
   bomb:   { cat: 'item',   name: '폭탄',         w: 7 },
   shield: { cat: 'item',   name: '보호막',       w: 6 },
+  // 합성 심볼: 릴에서 이웃한 두 칸이 레시피 조합이면 합성. 판 끝까지 지속 (덱에는 들어가지 않음)
+  flameWave:   { cat: 'attack', name: '화염 검기', fusion: true, desc: '베기마다 불타는 검기 발사' },
+  paladin:     { cat: 'hero',   name: '성기사',    fusion: true, desc: '계속 함께 싸우며 주기적으로 보호막' },
+  comet:       { cat: 'skill',  name: '혜성',      fusion: true, desc: '주기적으로 떨어져 주변을 얼림' },
+  stormArcher: { cat: 'hero',   name: '뇌전 궁수', fusion: true, desc: '계속 함께 싸우며 화살이 번개로 연쇄' },
 };
-const SYMBOL_IDS = Object.keys(SYMBOLS);
+const SYMBOL_IDS = Object.keys(SYMBOLS).filter((id) => !SYMBOLS[id].fusion);
+
+// 합성 레시피 (순서 무관)
+const RECIPES = [
+  { a: 'wave', b: 'flame', out: 'flameWave' },
+  { a: 'knight', b: 'shield', out: 'paladin' },
+  { a: 'meteor', b: 'frost', out: 'comet' },
+  { a: 'archer', b: 'chain', out: 'stormArcher' },
+];
+const findRecipe = (x, y) => RECIPES.find((r) => (r.a === x && r.b === y) || (r.a === y && r.b === x));
 
 // ---------------------------------------------------------------- 몬스터 릴 심볼
 const MSYM = {
@@ -207,6 +237,13 @@ const ENEMY_TYPES = {
     special: { kind: 'smash', dmg: 26, range: 90, wind: 1.3, cd: [4, 6] },
     reel: { coin: 67, atk: 12, aspd: 10, crit: 10, guard: 10, hp: 8, charge: 8, miss: 5 }, // 코인 55%
   },
+  // 10분 최종 보스 (아레나). 처치 시 챕터 클리어
+  warlord: {
+    name: '오우거 대족장', hp: 4000, r: 30, size: 2.0, speed: 62, dmg: 11, atkRange: 24, atkWind: 0.55, atkCD: 1.7,
+    exp: 0, mass: 20, height: 100, color: '#a04ad0', art: 'brute', boss: true, final: true,
+    special: { kind: 'smash', dmg: 22, range: 100, wind: 1.2, cd: [3.5, 5.5] },
+    reel: { coin: 67, atk: 12, aspd: 10, crit: 10, guard: 10, hp: 8, charge: 8, miss: 5 },
+  },
 };
 
 const HERO_TYPES = {
@@ -216,6 +253,9 @@ const HERO_TYPES = {
   mage:   { name: '마법사', hp: 110, range: 280, atkCD: 1.3,  dmg: 22, speed: 210 },
   // 힐러: 체력 비율이 가장 낮은 아군(플레이어·영웅)을 회복. dmg = 1회 회복량
   healer: { name: '힐러',   hp: 140, range: 320, atkCD: 1.5,  dmg: 12, speed: 230, heal: true },
+  // 합성 영웅 (판 끝까지 함께, 쓰러지면 잠시 뒤 부활). base = 모습·공격 방식
+  paladin:     { name: '성기사',    base: 'knight', hp: 380, range: 22,  atkCD: 0.7,  dmg: 22, speed: 250, aura: true },
+  stormArcher: { name: '뇌전 궁수', base: 'archer', hp: 200, range: 300, atkCD: 0.55, dmg: 15, speed: 240, chain: true },
 };
 
 // 레벨업 성장 카드
@@ -245,6 +285,48 @@ const CARDS = [
   { id: 'lucky', glyph: 'clover', name: '행운의 릴', desc: () => '같은 릴 연속 확률 증가\n(합체 확률 ↑)', weight: () => 6,
     apply: (g) => { g.player.mods.lucky += 0.08; } },
 ];
+
+// 레벨업 릴 편집 카드 (지금 덱 상태에 따라 레벨업마다 새로 만듦)
+//  추가: 덱에 없는 심볼 넣기 / 제거: 덱 압축(합체·합성 확률 ↑) / 강화: 획득 Lv +1 / 황금 와일드: 합체 확정
+function reelEditCards(g) {
+  const R = g.preel, D = BAL.deck, out = [];
+  // 이 심볼을 넣으면 덱 안에서 완성되는 레시피
+  const completes = (id) => RECIPES.find((r) => (r.a === id && R.deck.includes(r.b)) || (r.b === id && R.deck.includes(r.a)));
+  const missing = SYMBOL_IDS.filter((id) => !R.deck.includes(id));
+  if (R.deck.length < D.max && missing.length) {
+    const id = weightedPick(missing, (s) => (completes(s) ? 3 : 1));
+    const rc = completes(id);
+    out.push({
+      id: 'add', sym: id, tag: '추가', name: SYMBOLS[id].name, weight: () => 12,
+      desc: () => '릴 덱에 추가' + (rc ? `\n합성 가능!\n→ ${SYMBOLS[rc.out].name}` : ''),
+      apply: (g) => g.preel.addSymbol(id),
+    });
+  }
+  if (R.deck.length > D.min) {
+    // 레시피 재료·회복 수단(물약·힐러)이 아닌 심볼을 먼저 빼도록 가중
+    const id = weightedPick(R.deck, (s) => (s === 'potion' || s === 'healer' ? 0.3 : RECIPES.some((r) => r.a === s || r.b === s) ? 1 : 3));
+    out.push({
+      id: 'remove', sym: id, tag: '제거', name: SYMBOLS[id].name, weight: () => 8,
+      desc: () => '릴 덱에서 제거\n덱이 좁을수록\n합체·합성 확률 ↑',
+      apply: (g) => g.preel.removeSymbol(id),
+    });
+  }
+  const boostable = R.deck.filter((s) => (R.boost[s] || 0) < D.boostMax);
+  if (boostable.length) {
+    const id = pick(boostable);
+    out.push({
+      id: 'boost', sym: id, tag: '강화', name: SYMBOLS[id].name, weight: () => 9,
+      desc: () => `획득 Lv +1 (현재 +${R.boost[id] || 0})\n등장 확률 ↑`,
+      apply: (g) => g.preel.boostSymbol(id),
+    });
+  }
+  out.push({
+    id: 'gold', glyph: 'coin', tag: '황금', name: '황금 와일드', weight: () => 6,
+    desc: () => '다음 합체 2회 확정\n(왼쪽 칸과 같은 심볼)',
+    apply: (g) => { g.preel.gold += 2; },
+  });
+  return out;
+}
 
 </script>
 <script>/* sfx.js */
@@ -341,6 +423,9 @@ const PAL_HERO = {
   archer: { skin: '#ffd9b8', hair: '#6a3a1a', body: '#3f8a4a', body2: '#2f6e3a', belt: '#6a4a2a', pants: '#3a3426', boots: '#5a3a24', hat: '#2f6e3a' },
   mage:   { skin: '#ffd9b8', hair: '#d8d8e8', body: '#6b48b8', body2: '#55389a', belt: '#e8b84a', pants: '#3a2a5a', boots: '#3a2a4a', hat: '#4b2f8f' },
   healer: { skin: '#ffd9b8', hair: '#f0d070', body: '#f4f1ff', body2: '#d6d0f0', belt: '#4fc77a', pants: '#bfb8dc', boots: '#8a7a5a', hat: '#ffffff' },
+  // 합성 영웅
+  paladin:     { skin: '#ffd9b8', hair: '#d8a040', body: '#f2d27a', body2: '#d8ae4a', belt: '#7a4a2a', pants: '#4a3a5a', boots: '#5a4632', hat: '#ffe08a' },
+  stormArcher: { skin: '#ffd9b8', hair: '#2a3a6a', body: '#3a6ad8', body2: '#2a4ea8', belt: '#ffd24a', pants: '#2a2a46', boots: '#3a3a5a', hat: '#2a4ea8' },
 };
 
 const ART = {
@@ -900,8 +985,9 @@ ART.drawBrute = function (ctx, e, t) {
   ctx.save(); ctx.translate(e.x, e.y); ctx.scale(flip ? -1 : 1, 1);
   ctx.lineJoin = 'round';
   const B = e.boss;
-  const skin = this.enemyColors(e, B ? '#c85a4a' : '#9a7cc0'), belly = this.enemyColors(e, B ? '#eaa088' : '#c3a9de');
-  const dark = this.enemyColors(e, B ? '#5a2420' : '#4a3460'), cloth = this.enemyColors(e, B ? '#3a2a4a' : '#7a5434');
+  const F = e.def.final; // 최종 보스: 보랏빛
+  const skin = this.enemyColors(e, F ? '#8a4ac8' : B ? '#c85a4a' : '#9a7cc0'), belly = this.enemyColors(e, F ? '#c8a0f0' : B ? '#eaa088' : '#c3a9de');
+  const dark = this.enemyColors(e, F ? '#3a1a5a' : B ? '#5a2420' : '#4a3460'), cloth = this.enemyColors(e, F ? '#1a1a2a' : B ? '#3a2a4a' : '#7a5434');
   roundRect(ctx, -20 + step * 4, -24, 14, 24, 6); this.fs(ctx, dark);
   roundRect(ctx, 6 - step * 4, -24, 14, 24, 6); this.fs(ctx, dark);
   // 뒤쪽 팔
@@ -955,10 +1041,16 @@ ART.drawHero = function (ctx, h, g) {
   // 발밑 지속시간 링
   ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 5;
   this.ell(ctx, h.x, h.y, 24, 9); ctx.stroke();
-  ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.ellipse(h.x, h.y, 24, 9, 0, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(h.life / h.maxLife, 0, 1)); ctx.stroke();
+  ctx.strokeStyle = h.permanent ? '#fff2b0' : '#ffd24a'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.ellipse(h.x, h.y, 24, 9, 0, -Math.PI / 2, -Math.PI / 2 + TAU * (h.permanent ? 1 : clamp(h.life / h.maxLife, 0, 1))); ctx.stroke();
+  if (h.permanent) {
+    // 합성 영웅: 발밑 금빛 오라
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(255,220,120,${0.12 + 0.08 * Math.sin(t * 4 + h.seed)})`; this.ell(ctx, h.x, h.y, 34, 13); ctx.fill();
+    ctx.restore();
+  }
   const swingK = h.swing > 0 ? 1 - h.swing / 0.25 : 0;
-  const type = h.type;
+  const type = h.base;
   const hat = type === 'knight' ? 'helmet' : type === 'archer' || type === 'healer' ? 'hood' : 'wizard';
   const front = (c, fi, by) => {
     if (type === 'knight') {
@@ -1003,7 +1095,7 @@ ART.drawHero = function (ctx, h, g) {
     ctx.beginPath(); ctx.moveTo(h.x, h.y - h.z - 30); ctx.lineTo(h.x, h.y - h.z - 150); ctx.stroke();
     ctx.restore();
   }
-  this.humanoid(ctx, { x: h.x, y: h.y - h.z, facing: h.facing, bob, step, pal: h.hurtFlash > 0 ? PAL_WHITE : PAL_HERO[type], hat, s: 0.95 + 0.04 * (h.lvl - 1), t, front });
+  this.humanoid(ctx, { x: h.x, y: h.y - h.z, facing: h.facing, bob, step, pal: h.hurtFlash > 0 ? PAL_WHITE : PAL_HERO[h.type], hat, s: (h.permanent ? 1.05 : 0.95) + 0.04 * (h.lvl - 1), t, front });
   ctx.restore();
   if (h.z > 0) return;
   // 체력바 (+ 레벨 별)
@@ -1038,7 +1130,8 @@ ART.drawProjectile = function (ctx, pr, g) {
     const sc = pr.scale || 1; ctx.scale(sc, sc);
     ctx.beginPath(); ctx.arc(-14, 0, 36, -1.25, 1.25); ctx.arc(-30, 0, 32, 1.05, -1.05, true); ctx.closePath();
     const gr = ctx.createLinearGradient(-30, 0, 22, 0);
-    gr.addColorStop(0, 'rgba(60,200,255,0)'); gr.addColorStop(0.6, 'rgba(90,230,255,0.8)'); gr.addColorStop(1, 'rgba(255,255,255,1)');
+    if (pr.fire) { gr.addColorStop(0, 'rgba(255,60,0,0)'); gr.addColorStop(0.6, 'rgba(255,140,40,0.85)'); gr.addColorStop(1, 'rgba(255,240,170,1)'); }
+    else { gr.addColorStop(0, 'rgba(60,200,255,0)'); gr.addColorStop(0.6, 'rgba(90,230,255,0.8)'); gr.addColorStop(1, 'rgba(255,255,255,1)'); }
     ctx.fillStyle = gr; ctx.fill();
     ctx.restore();
   } else if (pr.kind === 'arrow') {
@@ -1275,15 +1368,62 @@ ART.symbolIcon = function (id) {
   if (this.icons[id]) return this.icons[id];
   const c = document.createElement('canvas'); c.width = c.height = 128;
   const x = c.getContext('2d');
-  const cat = CAT[SYMBOLS[id].cat];
+  const S = SYMBOLS[id], cat = CAT[S.cat];
   roundRect(x, 4, 4, 120, 120, 24);
   const g = x.createRadialGradient(64, 44, 6, 64, 64, 90);
   g.addColorStop(0, cat.color); g.addColorStop(1, cat.dark);
   x.fillStyle = g; x.fill();
-  x.lineWidth = 3; x.strokeStyle = 'rgba(255,255,255,0.35)'; x.stroke();
-  this.glyph(x, id, 64, 66, 92);
+  if (S.fusion) {
+    // 합성 심볼: 두 재료 그림 겹침 + 금테
+    const rc = RECIPES.find((r) => r.out === id);
+    this.glyph(x, rc.a, 56, 60, 86);
+    this.glyph(x, rc.b, 92, 92, 50);
+    x.save(); x.globalCompositeOperation = 'lighter'; x.fillStyle = 'rgba(255,240,170,0.9)';
+    for (const [sx, sy, r] of [[24, 24, 7], [104, 30, 5], [28, 100, 4]]) {
+      x.beginPath(); for (let j = 0; j < 8; j++) { const rr = j % 2 ? r * 0.35 : r; const a = j / 8 * TAU; x.lineTo(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr); } x.closePath(); x.fill();
+    }
+    x.restore();
+    roundRect(x, 4, 4, 120, 120, 24); x.lineWidth = 7; x.strokeStyle = '#ffd24a'; x.stroke();
+    roundRect(x, 9, 9, 110, 110, 20); x.lineWidth = 2; x.strokeStyle = '#fff6c0'; x.stroke();
+  } else {
+    x.lineWidth = 3; x.strokeStyle = 'rgba(255,255,255,0.35)'; x.stroke();
+    this.glyph(x, id, 64, 66, 92);
+  }
   this.icons[id] = c;
   return c;
+};
+
+// 최종 보스 아레나 (바닥 테두리 + 바깥 어둡게)
+ART.drawArena = function (ctx, A, t) {
+  const k = Math.min(1, A.t / 0.6);
+  ctx.save();
+  ctx.fillStyle = `rgba(10,0,10,${0.45 * k})`;
+  ctx.beginPath(); ctx.rect(A.x - 3000, A.y - 3000, 6000, 6000); ctx.ellipse(A.x, A.y, A.r, A.r, 0, 0, TAU, true); ctx.fill('evenodd');
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = `rgba(255,70,90,${(0.55 + 0.25 * Math.sin(t * 6)) * k})`; ctx.lineWidth = 10;
+  this.circle(ctx, A.x, A.y, A.r); ctx.stroke();
+  ctx.strokeStyle = `rgba(255,200,120,${0.7 * k})`; ctx.lineWidth = 3;
+  ctx.setLineDash([18, 14]); ctx.lineDashOffset = -t * 40;
+  this.circle(ctx, A.x, A.y, A.r - 14); ctx.stroke();
+  ctx.restore();
+  // 테두리 돌기둥
+  const n = 16;
+  for (let i = 0; i < n; i++) {
+    const a = i / n * TAU, px = A.x + Math.cos(a) * A.r, py = A.y + Math.sin(a) * A.r;
+    const h = 30 * k;
+    this.shadow(ctx, px, py + 2, 12, 5, 0.3);
+    roundRect(ctx, px - 8, py - h, 16, h + 4, 4); this.fs(ctx, '#6a5a7a', 2.5);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = `rgba(255,90,90,${0.5 + 0.4 * Math.sin(t * 6 + i)})`;
+    this.circle(ctx, px, py - h - 4, 5); ctx.fill(); ctx.restore();
+  }
+};
+
+// 바닥에 흘린 코인 (사라지기 직전 깜빡임)
+ART.drawCoinPickup = function (ctx, c, t) {
+  const left = c.life - c.t;
+  if (left < 2 && Math.sin(t * 20) < 0) return;
+  this.shadow(ctx, c.x, c.y + 2, 10, 4, 0.3);
+  this.glyph(ctx, 'coin', c.x, c.y - 14 - c.z - Math.abs(Math.sin(t * 5 + c.x)) * 3, 28);
 };
 
 // 몬스터 릴 심볼 아이콘
@@ -1601,6 +1741,7 @@ class Player {
     this.shield = 0; this.shieldT = 0;
     this.invuln = 0; this.hurtFlash = 0;
     this.abilities = {};       // 릴 공격 능력 { id: {t, max, lvl} }
+    this.fusions = {};         // 합성 공격·스킬 (판 끝까지) { id: {lvl, ...} }
     this.curses = {};          // 저주 { id: {t, max} }
     this.bleedTick = 0;
     this.orbitAng = 0; this.storm = 0; this.stormTick = 0;
@@ -1862,6 +2003,19 @@ class Player {
       }
     }
     if (A.chain && t && hits.includes(t)) g.chainLightning(t, 2 + A.chain.lvl, this.atkPower * (0.45 + 0.12 * A.chain.lvl));
+    // 합성: 화염 검기 (베기마다 불타는 검기, 맞은 적 점화)
+    const fw = this.fusions.flameWave;
+    if (fw) {
+      const n = fw.lvl >= 4 ? 3 : fw.lvl >= 2 ? 2 : 1;
+      for (let i = 0; i < n; i++) {
+        const a = this.facing + (i - (n - 1) / 2) * 0.3;
+        g.projectiles.push(new Projectile({
+          kind: 'wave', fire: true, x: this.x + Math.cos(a) * 20, y: this.y + Math.sin(a) * 20,
+          vx: Math.cos(a) * 820, vy: Math.sin(a) * 820, ang: a, life: 0.6, r: 34, pierce: 99,
+          dmg: this.atkPower * (0.8 + 0.15 * fw.lvl), scale: 1.15 + 0.1 * fw.lvl, burn: this.atkPower * (0.4 + 0.1 * fw.lvl),
+        }));
+      }
+    }
   }
 
   updateAbilities(dt, g) {
@@ -1937,9 +2091,9 @@ class Enemy {
   }
 
   pickTarget(g) {
-    // 기사 영웅은 주변 적을 도발
+    // 기사(성기사 포함) 영웅은 주변 적을 도발
     for (const h of g.heroes) {
-      if (h.alive && h.landed && h.type === 'knight' && dist2(h.x, h.y, this.x, this.y) < 150 * 150) return h;
+      if (h.alive && h.landed && h.base === 'knight' && dist2(h.x, h.y, this.x, this.y) < 150 * 150) return h;
     }
     // 그 외에는 플레이어보다 확실히 가까운 영웅을 공격
     const p = g.player;
@@ -2060,7 +2214,7 @@ class Enemy {
       if (p.parryActive(g)) g.onParry(this);
       else {
         g.damagePlayer(sp.dmg * this.dmgScale, this, { heavy: true });
-        if (!p.dead) g.cursePlayer(); // 특수기를 막지 못하면 저주 릴
+        if (!p.dead) { g.cursePlayer(); g.dropCoins(); } // 특수기를 막지 못하면 저주 릴 + 코인 흘림
       }
     }
   }
@@ -2070,6 +2224,8 @@ class Enemy {
 class Hero {
   constructor(type, x, y, lvl) {
     this.type = type; this.def = HERO_TYPES[type];
+    this.base = this.def.base || type; // 모습·공격 방식 (합성 영웅은 기본 영웅을 따름)
+    this.permanent = false; this.auraT = 2;
     this.x = x; this.y = y; this.r = 18 * BAL.charScale; this.lvl = lvl;
     this.life = this.maxLife = BAL.heroDur;
     this.alive = true;
@@ -2102,6 +2258,16 @@ class Hero {
     this.atkT -= dt;
     this.isMoving = false;
     const p = g.player;
+    if (this.def.aura && !p.dead) {
+      // 성기사: 주기적으로 플레이어에게 보호막
+      this.auraT -= dt;
+      if (this.auraT <= 0) {
+        this.auraT = BAL.fusion.paladinShieldCD;
+        p.shield = Math.max(p.shield, 20 + 12 * this.lvl); p.shieldT = 12;
+        g.fx.ring(p.x, p.y - 30, 10, 70, 0.45, '#ffe08a', 6);
+        g.fx.text(p.x, p.y - 116, '성기사의 가호', '#ffe08a', 20, { life: 1.0 });
+      }
+    }
     if (this.def.heal) { this.updateHealer(dt, g); return; }
     if (!this.target || !this.target.alive || dist2(this.target.x, this.target.y, p.x, p.y) > 650 * 650) {
       this.target = g.findNearestEnemy(this.x, this.y, 560, (e) => dist2(e.x, e.y, p.x, p.y) < 600 * 600);
@@ -2114,7 +2280,7 @@ class Hero {
       const gap = dist(this.x, this.y, t.x, t.y) - t.r - this.r;
       const want = this.def.range;
       if (gap > want) { mx = Math.cos(a); my = Math.sin(a); }
-      else if (this.type !== 'knight' && gap < want * 0.4) { mx = -Math.cos(a); my = -Math.sin(a); }
+      else if (this.base !== 'knight' && gap < want * 0.4) { mx = -Math.cos(a); my = -Math.sin(a); }
       if (gap <= want + 8 && this.atkT <= 0) {
         this.attack(g, t);
         this.atkT = this.def.atkCD / (1 + 0.15 * (this.lvl - 1));
@@ -2164,7 +2330,8 @@ class Hero {
 
   attack(g, t) {
     this.swing = 0.25;
-    if (this.type === 'knight') {
+    const chain = this.def.chain ? 1 + Math.ceil(this.lvl / 2) : 0; // 뇌전 궁수: 화살 적중 시 번개 연쇄
+    if (this.base === 'knight') {
       for (const e of g.enemies) {
         if (!e.alive) continue;
         const d = dist(this.x, this.y, e.x, e.y) - e.r - this.r;
@@ -2172,19 +2339,19 @@ class Hero {
           g.damageEnemy(e, this.dmg, { kx: Math.cos(this.facing) * 160, ky: Math.sin(this.facing) * 160 });
         }
       }
-      g.fx.slash(this.x, this.y, this.facing, 64, 2, 1, '#ffe08a', 0.2);
+      g.fx.slash(this.x, this.y, this.facing, 64, 2, 1, this.def.aura ? '#fff2b0' : '#ffe08a', 0.2);
       SFX.slash();
-    } else if (this.type === 'archer') {
+    } else if (this.base === 'archer') {
       const a = angleTo(this.x, this.y, t.x, t.y);
       g.projectiles.push(new Projectile({
         kind: 'arrow', x: this.x, y: this.y, vx: Math.cos(a) * 950, vy: Math.sin(a) * 950,
-        life: 0.6, r: 8, dmg: this.dmg, pierce: this.lvl >= 3 ? 2 : 0,
+        life: 0.6, r: 8, dmg: this.dmg, pierce: this.lvl >= 3 ? 2 : 0, chain, zap: !!chain,
       }));
       if (this.lvl >= 2) {
         for (const off of [-0.18, 0.18]) {
           g.projectiles.push(new Projectile({
             kind: 'arrow', x: this.x, y: this.y, vx: Math.cos(a + off) * 950, vy: Math.sin(a + off) * 950,
-            life: 0.6, r: 8, dmg: this.dmg * 0.6, pierce: 0,
+            life: 0.6, r: 8, dmg: this.dmg * 0.6, pierce: 0, zap: !!chain,
           }));
         }
       }
@@ -2218,7 +2385,10 @@ class Projectile {
             if (this.kind === 'fireball') { this.explode(g); return; }
             this.hit.add(e);
             const a = Math.atan2(this.vy, this.vx);
-            g.damageEnemy(e, this.dmg, { color: this.kind === 'wave' ? '#9ff3ff' : '#ffffff', kx: Math.cos(a) * 120, ky: Math.sin(a) * 120 });
+            const col = this.fire ? '#ffb04a' : this.kind === 'wave' ? '#9ff3ff' : this.zap ? '#fff46a' : '#ffffff';
+            g.damageEnemy(e, this.dmg, { color: col, kx: Math.cos(a) * 120, ky: Math.sin(a) * 120 });
+            if (this.burn && e.alive) e.ignite(this.burn, 3);
+            if (this.chain) { g.chainLightning(e, this.chain, this.dmg * 0.6); this.chain = 0; }
             if (this.pierce-- <= 0) { this.alive = false; return; }
           }
         }
@@ -2243,9 +2413,17 @@ class Projectile {
     if (this.kind === 'fireball') g.explode(this.x, this.y, this.R, this.dmg, { shake: 3 });
     else if (this.kind === 'bomb') g.explode(this.x, this.y, this.R, this.dmg, { shake: 9 });
     else if (this.kind === 'meteor') {
-      g.explode(this.tx, this.ty, this.R, this.dmg, { shake: 16 });
-      g.fx.ring(this.tx, this.ty, 20, this.R * 1.3, 0.5, '#ffcf7a', 12, true);
-      g.flash = 0.25; g.flashColor = '255,200,120';
+      g.explode(this.tx, this.ty, this.R, this.dmg, { shake: this.freeze ? 10 : 16 });
+      if (this.freeze) {
+        // 혜성: 떨어진 자리 주변을 얼림
+        for (const e of g.enemies) if (e.alive && dist(this.tx, this.ty, e.x, e.y) <= this.R * 1.15 + e.r) e.freeze(this.freeze);
+        g.fx.ring(this.tx, this.ty, 20, this.R * 1.3, 0.6, '#bfe8ff', 12, true);
+        g.fx.burst(this.tx, this.ty, '#dff6ff', 24, 500, 0.6, 5, { z: 20, glow: true });
+        SFX.freeze();
+      } else {
+        g.fx.ring(this.tx, this.ty, 20, this.R * 1.3, 0.5, '#ffcf7a', 12, true);
+        g.flash = 0.25; g.flashColor = '255,200,120';
+      }
     }
   }
 }
@@ -2257,10 +2435,10 @@ class Projectile {
 //  - PlayerReel : 상단 HUD의 플레이어 릴. 코인 개수만큼 칸들이 반짝이고,
 //                 반짝이는 칸을 터치하면 첫 칸부터 그 칸까지 코인을 써서 함께 회전.
 //                 왼쪽 릴과 같은 심볼이 나오면 왼쪽 릴로 합체(강화)하고 그 칸은 한 번 더 회전.
-//                 모두 멈추면 심볼이 캐릭터에게 날아가 획득되고 릴은 바로 비워짐.
+//                 모두 멈추면 이웃한 레시피 조합을 합성 → 심볼이 캐릭터에게 날아가 획득되고 릴은 바로 비워짐.
+//                 심볼은 판마다 새로 꾸리는 덱(레벨업 카드로 추가·제거·강화)에서만 나옴.
+//                 남은 칸을 모두 돌릴 때 코인이 충분히 남으면 피버 스핀 (남은 코인 전부 사용).
 //  - SlotReel   : 몬스터 머리 위 릴 / 플레이어 저주 릴 (월드 공간)
-
-const randomPlayerSymbol = () => weightedPick(SYMBOL_IDS, (id) => SYMBOLS[id].w);
 
 function makeStrip(first, result, len, rollFn) {
   const strip = [first];
@@ -2292,8 +2470,27 @@ class PlayerReel {
     this.respins = {};        // 칸별 연속 합체 횟수
     this.temp = [];           // 임시 슬롯별 남은 회전 횟수
     this.holdT = 0;           // 결과 확인 후 캐릭터에게 날아가기까지
-    this.spins = 0; this.merges = 0;
+    this.spins = 0; this.merges = 0; this.fusions = 0; this.fevers = 0;
     this.newSlotFx = 0;
+    this.deck = BAL.deck.start.slice();
+    this.boost = {};          // 심볼별 획득 Lv 보너스 (강화 카드)
+    this.gold = 0;            // 황금 와일드: 남은 합체 확정 횟수
+    this.fever = null;        // 피버 스핀 중이면 { bonus, surplus }
+  }
+
+  // 덱에서 심볼 뽑기 (강화한 심볼은 더 자주)
+  randSym() { return weightedPick(this.deck, (id) => SYMBOLS[id].w * (1 + 0.5 * (this.boost[id] || 0))); }
+
+  addSymbol(id) { if (!this.deck.includes(id)) this.deck.push(id); }
+  removeSymbol(id) { if (this.deck.length > BAL.deck.min) this.deck = this.deck.filter((s) => s !== id); }
+  boostSymbol(id) { this.boost[id] = Math.min(BAL.deck.boostMax, (this.boost[id] || 0) + 1); }
+
+  // 지금 남은 칸을 모두 돌리면 피버가 되는지 (남는 코인 수, 아니면 0)
+  feverSurplus() {
+    const n = this.slotCount() - this.cursor;
+    if (this.available() < n) return 0;
+    const s = this.coins - n;
+    return s >= BAL.fever.min ? s : 0;
   }
 
   slotCount() { return Math.min(BAL.reel.maxSlots, BAL.reel.baseSlots + this.temp.length); }
@@ -2320,7 +2517,18 @@ class PlayerReel {
   spinTo(i) {
     if (!this.canSpinTo(i)) return false;
     const n = i - this.cursor + 1;
-    this.coins -= n;
+    const surplus = i === this.slotCount() - 1 ? this.feverSurplus() : 0;
+    if (surplus) {
+      // 피버: 남은 코인을 모두 써서 합체 확률 + 재회전 한도 상승
+      const F = BAL.fever;
+      this.coins = 0;
+      this.fever = { bonus: Math.min(F.maxBonus, surplus * F.perCoin), surplus };
+      this.fevers++;
+      this.g.onFever(surplus);
+    } else {
+      this.coins -= n;
+      this.fever = null;
+    }
     this.respins = {};
     for (let k = 0; k < n; k++) this.startSpin(this.cursor + k, k, false);
     SFX.spinStart();
@@ -2332,7 +2540,7 @@ class PlayerReel {
 
   startSpin(i, order, respin) {
     const strip = [];
-    for (let k = 0; k < 12; k++) strip.push(randomPlayerSymbol());
+    for (let k = 0; k < 12; k++) strip.push(this.randSym());
     this.cells[i] = undefined;
     this.active.push({
       i, phase: 'free', freeT: 0,
@@ -2361,7 +2569,7 @@ class PlayerReel {
         const blocked = this.active.some((o) => o.i < s.i);
         if (!blocked && s.freeT >= s.minFree) {
           s.result = this.roll(s.i);
-          s.strip = makeStrip(s.strip[idx], s.result, 8, randomPlayerSymbol);
+          s.strip = makeStrip(s.strip[idx], s.result, 8, () => this.randSym());
           s.L = 8; s.pos = 0; s.t = 0; s.lastIdx = 0; s.phase = 'stop';
         }
       } else if (advanceSpin(s, dt)) {
@@ -2373,16 +2581,20 @@ class PlayerReel {
 
   roll(i) {
     const left = this.cells[i - 1];
-    const luck = BAL.reel.matchChance + this.g.player.mods.lucky;
-    if (left && Math.random() < luck) return left.id;
-    return randomPlayerSymbol();
+    if (!left || left.fused) return this.randSym();
+    if (this.gold > 0 && (this.respins[i] || 0) < this.maxRespin) { this.gold--; return left.id; } // 황금 와일드: 합체 확정
+    const luck = BAL.reel.matchChance + this.g.player.mods.lucky + (this.fever ? this.fever.bonus : 0);
+    if (Math.random() < luck) return left.id;
+    return this.randSym();
   }
+
+  get maxRespin() { return this.fever ? BAL.fever.respin : BAL.reel.maxRespin; }
 
   onStop(s) {
     const g = this.g;
     SFX.reelStop();
     const id = s.result, i = s.i, left = this.cells[i - 1];
-    if (left && left.id === id && (this.respins[i] || 0) < BAL.reel.maxRespin) {
+    if (left && !left.fused && left.id === id && (this.respins[i] || 0) < this.maxRespin) {
       // 합체: 왼쪽 릴 강화 + 이 칸 재회전
       left.lvl++; left.merge = 1; left.flash = 1;
       this.respins[i] = (this.respins[i] || 0) + 1;
@@ -2394,7 +2606,25 @@ class PlayerReel {
     }
     this.cells[i] = { id, lvl: 1, flash: 1, merge: 0 };
     this.cursor = Math.max(this.cursor, i + 1);
-    if (!this.busy) this.holdT = 0.35; // 모두 멈춤 → 잠깐 보여준 뒤 획득
+    if (!this.busy) this.holdT = this.fuse() ? 1.0 : 0.35; // 모두 멈춤 → (합성) → 잠깐 보여준 뒤 획득
+  }
+
+  // 이웃한 두 칸이 레시피 조합이면 왼쪽 칸에 합성 심볼, 오른쪽 칸은 비움
+  fuse() {
+    let any = false;
+    for (let i = 0; i + 1 < this.cells.length; i++) {
+      const a = this.cells[i], b = this.cells[i + 1];
+      if (!a || !b || a.fused || b.fused) continue;
+      const rc = findRecipe(a.id, b.id);
+      if (!rc) continue;
+      this.cells[i] = { id: rc.out, lvl: Math.max(a.lvl, b.lvl), flash: 1, merge: 1, fused: true, parts: [a.id, b.id] };
+      this.cells[i + 1] = { id: b.id, lvl: b.lvl, flash: 1, merge: 0, consumed: true };
+      this.fusions++;
+      this.g.onFusion(rc.out, this.cells[i].lvl);
+      any = true;
+      i++;
+    }
+    return any;
   }
 
   // 결과 심볼을 캐릭터에게 날려 보내고 릴 초기화
@@ -2402,12 +2632,14 @@ class PlayerReel {
     const { rects } = this.g.ui.reelSlotRects();
     let order = 0;
     this.cells.forEach((c, i) => {
-      if (!c || !rects[i]) return;
+      if (!c || c.consumed || !rects[i]) return;
       const r = rects[i];
-      this.g.launchSymbol(c.id, c.lvl, r.x + r.w / 2, r.y + r.h / 2, Math.min(r.w, r.h) - 12, order++ * 0.12);
+      const lvl = c.lvl + (c.fused ? 0 : this.boost[c.id] || 0);
+      this.g.launchSymbol(c.id, lvl, r.x + r.w / 2, r.y + r.h / 2, Math.min(r.w, r.h) - 12, order++ * 0.12);
     });
     this.cells = [];
     this.cursor = 0;
+    this.fever = null;
     this.temp = this.temp.map((c) => c - 1).filter((c) => c > 0);
   }
 }
@@ -2713,6 +2945,7 @@ class UI {
     if (g.state === 'paused') this.drawPause(ctx);
     if (g.state === 'levelup') this.drawLevelUp(ctx);
     if (g.state === 'over') this.drawGameOver(ctx);
+    if (g.state === 'clear') this.drawClear(ctx);
   }
 
   drawHUD(ctx) {
@@ -2741,8 +2974,17 @@ class UI {
     const ek = clamp(g.exp / need, 0, 1);
     if (ek > 0) { roundRect(ctx, ex.x + 2, ex.y + 2, (ex.w - 4) * ek, ex.h - 4, 5); ctx.fillStyle = '#7dff8a'; ctx.fill(); }
     ctx.font = font(12); ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.fillText(`EXP ${g.exp}/${need}`, ex.x + ex.w / 2, ex.y + ex.h / 2 + 1);
+    // 챕터 진행 바 (정예 습격 · 중간 보스 · 최종 보스 시점 표시)
+    const C = BAL.chapter, cb = { x: ex.x, y: ex.y + ex.h + 4, w: ex.w, h: 6 };
+    roundRect(ctx, cb.x, cb.y, cb.w, cb.h, 3); ctx.fillStyle = '#0c0614'; ctx.fill();
+    const ck = clamp(g.elapsed / C.duration, 0, 1);
+    if (ck > 0) { roundRect(ctx, cb.x, cb.y, cb.w * ck, cb.h, 3); ctx.fillStyle = g.arena ? '#ff4a6a' : '#c99aff'; ctx.fill(); }
+    for (const s of C.eliteWaves) { ctx.fillStyle = '#ffd24a'; ART.circle(ctx, cb.x + cb.w * s / C.duration, cb.y + 3, 3.5); ctx.fill(); }
+    ctx.fillStyle = '#ff6a5a'; ART.circle(ctx, cb.x + cb.w * C.midBoss / C.duration, cb.y + 3, 5); ctx.fill();
+    ctx.fillStyle = '#ff2a5a'; ART.circle(ctx, cb.x + cb.w, cb.y + 3, 6); ctx.fill();
     ctx.textAlign = 'right'; ctx.font = font(20);
-    textOutlined(ctx, fmtTime(g.elapsed), W - 24, 22, '#ffffff', '#120b1c', 4);
+    const final = !!g.arena;
+    textOutlined(ctx, final ? 'FINAL' : fmtTime(g.elapsed), W - 24, 22, final ? '#ff6a7a' : '#ffffff', '#120b1c', 4);
     ctx.font = font(14); ctx.fillStyle = '#cbbfe6'; ctx.fillText(`처치 ${g.kills}`, W - 24, 42);
     // 잠시 멈춤 버튼
     const PB = this.pauseBtn;
@@ -2778,6 +3020,7 @@ class UI {
       ctx.fillStyle = gr; ctx.fill(); ctx.lineWidth = 4; ctx.strokeStyle = '#1a0f22'; ctx.stroke();
       ctx.font = font(28); textOutlined(ctx, b.label, b.x + b.w / 2, b.y + b.h / 2 + 1, '#ffffff', '#1a0f22', 5);
     }
+    this.drawDeck(ctx, py + ph + 20);
     ctx.restore();
   }
 
@@ -2787,15 +3030,32 @@ class UI {
     const pg = ctx.createLinearGradient(0, P.y, 0, P.y + P.h);
     pg.addColorStop(0, '#34224d'); pg.addColorStop(1, '#150c24');
     ctx.fillStyle = pg; ctx.fill();
-    ctx.lineWidth = 4; ctx.strokeStyle = R.busy ? `hsl(${(t * 360) % 360},90%,65%)` : '#c99a3c'; ctx.stroke();
+    const fever = R.fever, feverReady = R.feverSurplus() > 0;
+    ctx.lineWidth = fever ? 7 : 4;
+    ctx.strokeStyle = fever ? `hsl(${(t * 900) % 360},100%,68%)` : R.busy ? `hsl(${(t * 360) % 360},90%,65%)` : '#c99a3c'; ctx.stroke();
+    if (fever) {
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.25 + 0.15 * Math.sin(t * 20);
+      roundRect(ctx, P.x, P.y, P.w, P.h, 20); ctx.fillStyle = '#ff5ad8'; ctx.fill(); ctx.restore();
+    }
 
-    // 코인함
+    // 코인함 (피버 가능하면 분홍빛으로 반짝임)
+    if (feverReady) {
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.4 + 0.35 * Math.sin(t * 10);
+      roundRect(ctx, CB.x - 5, CB.y - 5, CB.w + 10, CB.h + 10, 18); ctx.fillStyle = '#ff5ad8'; ctx.fill(); ctx.restore();
+    }
     roundRect(ctx, CB.x, CB.y, CB.w, CB.h, 14); ctx.fillStyle = '#24160a'; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = R.coins > 0 ? '#ffd84a' : 'rgba(217,164,65,0.5)'; ctx.stroke();
+    ctx.lineWidth = 2; ctx.strokeStyle = feverReady ? '#ff9ae8' : R.coins > 0 ? '#ffd84a' : 'rgba(217,164,65,0.5)'; ctx.stroke();
     const bounce = R.coins > 0 ? Math.abs(Math.sin(t * 6)) * 3 : 0;
     ART.glyph(ctx, 'coin', CB.x + CB.w / 2, CB.y + 38 - bounce, 50);
     ctx.font = font(22); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     textOutlined(ctx, '×' + R.coins, CB.x + CB.w / 2, CB.y + 80, R.coins > 0 ? '#ffe27a' : '#8a7a5a', '#120b1c', 4);
+    if (feverReady) { ctx.font = font(14); textOutlined(ctx, 'FEVER', CB.x + CB.w / 2, CB.y + 8, '#ffd0f4', '#3a0a30', 4); }
+    if (R.gold > 0) {
+      // 황금 와일드 남은 횟수
+      const gx = CB.x + CB.w - 4, gy = CB.y + 4;
+      ART.circle(ctx, gx, gy, 13); ctx.fillStyle = '#ffd24a'; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = '#7a4a00'; ctx.stroke();
+      ctx.font = font(13); ctx.fillStyle = '#3a2000'; ctx.fillText('W' + R.gold, gx, gy + 1);
+    }
 
     const { rects, sw, sh, x0, y0, total } = this.reelSlotRects();
     const n = rects.length;
@@ -2824,8 +3084,19 @@ class UI {
         ctx.drawImage(ART.symbolIcon(spin.strip[idx % L]), cx - iconSize / 2, cy - iconSize / 2 + frac * sh, iconSize, iconSize);
         ctx.drawImage(ART.symbolIcon(spin.strip[(idx + 1) % L]), cx - iconSize / 2, cy - iconSize / 2 + (frac - 1) * sh, iconSize, iconSize);
         ctx.globalAlpha = 1;
+      } else if (cell && cell.consumed) {
+        // 합성 재료로 쓰인 칸: 흐리게 + 왼쪽 화살표
+        ctx.globalAlpha = 0.25;
+        ctx.drawImage(ART.symbolIcon(cell.id), cx - iconSize / 2, cy - iconSize / 2, iconSize, iconSize);
+        ctx.globalAlpha = 1;
+        ctx.font = font(30); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        textOutlined(ctx, '◀', cx - 6 * Math.sin(t * 12), cy, '#ffd24a', '#120b1c', 5);
       } else if (cell) {
         const s = iconSize * (1 + 0.15 * cell.merge);
+        if (cell.fused) {
+          ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.5 + 0.3 * Math.sin(t * 14);
+          ctx.fillStyle = '#ffd24a'; ART.circle(ctx, cx, cy, s * 0.62); ctx.fill(); ctx.restore();
+        }
         ctx.drawImage(ART.symbolIcon(cell.id), cx - s / 2, cy - s / 2, s, s);
       } else if (ready) {
         const s = iconSize * (0.55 + 0.05 * Math.sin(t * 9 - i * 0.6));
@@ -2843,10 +3114,11 @@ class UI {
       roundRect(ctx, x, y0, sw, sh, 12);
       let bc = isTemp ? '#5ef0ff' : '#d9a441', bw = 3;
       if (ready) { bc = `rgba(255,${200 + Math.round(55 * Math.sin(t * 9 - i * 0.6))},90,1)`; bw = 5; }
-      if (cell && cell.merge > 0) { bc = CAT[SYMBOLS[cell.id].cat].color; bw = 4 + 5 * cell.merge; }
+      if (cell && cell.fused) { bc = '#ffd24a'; bw = 5 + 4 * Math.abs(Math.sin(t * 8)); }
+      else if (cell && cell.merge > 0) { bc = CAT[SYMBOLS[cell.id].cat].color; bw = 4 + 5 * cell.merge; }
       else if (cell && cell.flash > 0) { bc = '#ffffff'; bw = 3 + 3 * cell.flash; }
       ctx.lineWidth = bw; ctx.strokeStyle = bc; ctx.stroke();
-      if (cell && cell.lvl > 1) {
+      if (cell && !cell.consumed && cell.lvl > 1) {
         const bx = x + sw - 16, by = y0 + 16;
         roundRect(ctx, bx - 22, by - 11, 38, 22, 11); ctx.fillStyle = CAT[SYMBOLS[cell.id].cat].color; ctx.fill();
         ctx.lineWidth = 2; ctx.strokeStyle = '#120b1c'; ctx.stroke();
@@ -2922,8 +3194,9 @@ class UI {
     const buffs = [];
     for (const id in p.curses) { const c = p.curses[id]; buffs.push({ img: ART.curseIcon(id), ratio: c.t / c.max, label: CURSES[id].name, curse: true }); }
     if (p.rage > 0) buffs.push({ glyph: 'flame', bg: '#ff7a1a', ratio: p.rage / (BAL.player.parryBuffTime + p.mods.rageTime), label: '반격' });
+    for (const id in p.fusions) { const f = p.fusions[id]; buffs.push({ img: ART.symbolIcon(id), ratio: f.max ? 1 - f.t / f.max : 1, label: 'Lv' + f.lvl }); }
     for (const id in p.abilities) { const a = p.abilities[id]; buffs.push({ img: ART.symbolIcon(id), ratio: a.t / a.max, label: a.lvl > 1 ? 'Lv' + a.lvl : '' }); }
-    for (const h of g.heroes) if (h.alive) buffs.push({ img: ART.symbolIcon(h.type), ratio: h.life / h.maxLife, label: h.lvl > 1 ? '★' + h.lvl : '' });
+    for (const h of g.heroes) if (h.alive) buffs.push({ img: ART.symbolIcon(h.type), ratio: h.permanent ? 1 : h.life / h.maxLife, label: h.lvl > 1 ? '★' + h.lvl : '' });
     if (p.shield > 0) buffs.push({ img: ART.symbolIcon('shield'), ratio: p.shieldT / 12, label: String(Math.ceil(p.shield)) });
     let bx = H.x + H.w + 16;
     const by = 224, bs = 32;
@@ -3107,7 +3380,8 @@ class UI {
     ART.circle(ctx, 0, 0, R.r - 7); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.stroke();
     ART.glyph(ctx, 'slot', 0, -10, R.r * 0.85);
     ctx.font = font(21); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    textOutlined(ctx, '릴 회전', 0, R.r * 0.52, '#ffffff', '#1a0f22', 5);
+    const fever = g.preel.feverSurplus() > 0;
+    textOutlined(ctx, fever ? '피버!' : '릴 회전', 0, R.r * 0.52, fever ? '#ffd0f4' : '#ffffff', '#1a0f22', 5);
     ctx.globalAlpha = 1;
     // 보유 코인 배지
     const bx = R.r * 0.72, by = -R.r * 0.72;
@@ -3176,12 +3450,19 @@ class UI {
       const bg = ctx.createLinearGradient(0, 0, 0, ch); bg.addColorStop(0, c.rare ? '#173a55' : '#33244d'); bg.addColorStop(1, '#140c22');
       ctx.fillStyle = bg; ctx.fill();
       ctx.lineWidth = 4; ctx.strokeStyle = c.rare ? '#5ef0ff' : '#d9a441'; ctx.stroke();
-      if (c.rare) {
-        roundRect(ctx, cw / 2 - 40, -12, 80, 24, 12); ctx.fillStyle = '#5ef0ff'; ctx.fill();
-        ctx.font = font(14); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#062030'; ctx.fillText('REEL', cw / 2, 1);
+      const tag = c.rare ? 'REEL' : c.tag ? '릴 ' + c.tag : '';
+      if (tag) {
+        const tc = c.rare ? '#5ef0ff' : { 추가: '#7dff9a', 제거: '#ff8a8a', 강화: '#ffd24a', 황금: '#ffd24a' }[c.tag];
+        roundRect(ctx, cw / 2 - 46, -12, 92, 24, 12); ctx.fillStyle = tc; ctx.fill();
+        ctx.font = font(14); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#120b1c'; ctx.fillText(tag, cw / 2, 1);
       }
       ART.circle(ctx, cw / 2, 90, 56); ctx.fillStyle = '#0d0818'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.stroke();
-      ART.glyph(ctx, c.glyph, cw / 2, 90, 80);
+      if (c.sym) {
+        ctx.drawImage(ART.symbolIcon(c.sym), cw / 2 - 44, 46, 88, 88);
+        if (c.tag === '제거') { ctx.font = font(64); textOutlined(ctx, '✕', cw / 2, 92, '#ff6a6a', '#1a0008', 7); }
+        else if (c.tag === '추가') { ctx.font = font(40); textOutlined(ctx, '+', cw / 2 + 40, 54, '#7dff9a', '#062010', 6); }
+        else if (c.tag === '강화') { ctx.font = font(34); textOutlined(ctx, '▲', cw / 2 + 40, 56, '#ffd24a', '#2a1200', 6); }
+      } else ART.glyph(ctx, c.glyph, cw / 2, 90, 80);
       ctx.font = font(24); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       textOutlined(ctx, c.name, cw / 2, 178, '#ffffff', '#120b1c', 5);
       ctx.font = font(18, '600'); ctx.fillStyle = '#d6cdf0';
@@ -3189,6 +3470,76 @@ class UI {
       ctx.font = font(14); ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fillText(`터치하여 선택  [${i + 1}]`, cw / 2, ch - 22);
       ctx.restore();
     });
+    this.drawDeck(ctx, y + ch + 34);
+  }
+
+  // 내 릴 덱 + 합성 레시피 (레벨업·일시 정지 화면)
+  drawDeck(ctx, y) {
+    const g = this.g, R = g.preel, W = this.W, p = g.player;
+    const bx = 24, bw = W - 48, bh = 176;
+    roundRect(ctx, bx, y, bw, bh, 16); ctx.fillStyle = 'rgba(20,12,34,0.92)'; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(217,164,65,0.6)'; ctx.stroke();
+    ctx.font = font(16); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    textOutlined(ctx, `내 릴 덱 ${R.deck.length}/${BAL.deck.max}`, bx + 16, y + 20, '#ffd24a', '#120b1c', 4);
+    ctx.font = font(13, '600'); ctx.fillStyle = '#a89cc8'; ctx.textAlign = 'right';
+    ctx.fillText('덱이 좁을수록 합체·합성 확률 ↑', bx + bw - 16, y + 20);
+    const s = 42, gap = 6, n = R.deck.length;
+    let x = bx + (bw - (n * s + (n - 1) * gap)) / 2;
+    for (const id of R.deck) {
+      ctx.drawImage(ART.symbolIcon(id), x, y + 38, s, s);
+      const b = R.boost[id] || 0;
+      if (b) { ctx.font = font(12); ctx.textAlign = 'center'; textOutlined(ctx, '+' + b, x + s - 6, y + 42, '#ffd24a', '#120b1c', 3); }
+      x += s + gap;
+    }
+    // 레시피: 두 재료가 덱에 있으면 밝게, 이번 판에 만든 건 금색 테두리
+    const rs = 30, gw = rs * 3 + 34, rgap = 10;
+    let rx = bx + (bw - (RECIPES.length * gw + (RECIPES.length - 1) * rgap)) / 2;
+    const ry = y + 104;
+    ctx.font = font(13, '600'); ctx.textAlign = 'left'; ctx.fillStyle = '#a89cc8'; ctx.fillText('합성 레시피 (이웃한 칸)', bx + 16, ry - 8);
+    for (const rc of RECIPES) {
+      const ok = R.deck.includes(rc.a) && R.deck.includes(rc.b);
+      const got = g.fusionsGot[rc.out] || p.fusions[rc.out] || g.heroes.some((h) => h.alive && h.type === rc.out);
+      ctx.globalAlpha = ok ? 1 : 0.35;
+      ctx.drawImage(ART.symbolIcon(rc.a), rx, ry + 8, rs, rs);
+      ctx.drawImage(ART.symbolIcon(rc.b), rx + rs + 2, ry + 8, rs, rs);
+      ctx.font = font(16); ctx.textAlign = 'center'; ctx.fillStyle = '#ffe9b0'; ctx.fillText('→', rx + rs * 2 + 14, ry + 8 + rs / 2);
+      ctx.drawImage(ART.symbolIcon(rc.out), rx + rs * 2 + 26, ry + 4, rs + 8, rs + 8);
+      if (got) { roundRect(ctx, rx + rs * 2 + 24, ry + 2, rs + 12, rs + 12, 8); ctx.lineWidth = 3; ctx.strokeStyle = '#ffd24a'; ctx.stroke(); }
+      ctx.globalAlpha = 1;
+      ctx.font = font(11, '600'); ctx.textAlign = 'center'; ctx.fillStyle = ok ? '#e8dcff' : '#7a7090';
+      ctx.fillText(SYMBOLS[rc.out].name, rx + rs * 2 + 30 + rs / 2, ry + rs + 24);
+      rx += gw + rgap;
+    }
+  }
+
+  drawClear(ctx) {
+    const g = this.g, W = this.W, H = this.H, t = g.time;
+    const a = clamp(g.clearT / 0.6, 0, 1);
+    ctx.save(); ctx.globalAlpha = a;
+    ctx.fillStyle = 'rgba(14,8,2,0.82)'; ctx.fillRect(0, 0, W, H);
+    ctx.font = font(60, '900'); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const lg = ctx.createLinearGradient(0, H * 0.25, 0, H * 0.31); lg.addColorStop(0, '#fff6c8'); lg.addColorStop(1, '#ffb02a');
+    textOutlined(ctx, 'CHAPTER CLEAR!', W / 2, H * 0.28, lg, '#2a1200', 10);
+    ctx.font = font(22); ctx.fillStyle = '#ffe9b0'; ctx.fillText('오우거 대족장 처치', W / 2, H * 0.28 + 56);
+    const R = g.preel;
+    const stats = [
+      ['클리어 시간', fmtTime(g.elapsed)], ['레벨', String(g.level)], ['처치', String(g.kills)],
+      ['패링 성공', String(g.parries)], ['몬스터 릴', String(g.monsterReels)],
+      ['릴 합체', String(R.merges)], ['피버 스핀', String(R.fevers)], ['합성', String(R.fusions)],
+    ];
+    const bw = 420, bx = W / 2 - bw / 2, by = H * 0.37;
+    roundRect(ctx, bx, by, bw, stats.length * 46 + 24, 18); ctx.fillStyle = 'rgba(30,18,6,0.9)'; ctx.fill(); ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 3; ctx.stroke();
+    stats.forEach(([k, v], i) => {
+      const y = by + 35 + i * 46;
+      ctx.font = font(22, '600'); ctx.textAlign = 'left'; ctx.fillStyle = '#e8d8b0'; ctx.fillText(k, bx + 30, y);
+      ctx.font = font(26); ctx.textAlign = 'right'; ctx.fillStyle = '#fff'; ctx.fillText(v, bx + bw - 30, y);
+    });
+    if (g.clearT > 1.2) {
+      ctx.globalAlpha = 0.55 + 0.45 * Math.sin(t * 4);
+      ctx.font = font(30); ctx.textAlign = 'center';
+      textOutlined(ctx, '터치하여 다시 도전', W / 2, by + stats.length * 46 + 90, '#ffffff', '#120b1c', 6);
+    }
+    ctx.restore();
   }
 
   drawTitle(ctx) {
@@ -3223,6 +3574,9 @@ class UI {
       ['릴블레이드', '게이지가 차면 다음 타격에 몬스터 릴'],
       ['코인', '반짝이는 릴 칸 터치 · 왼쪽 아래 릴 버튼은 전부 회전'],
       ['합체', '같은 릴이 연속 → 왼쪽 강화 + 재회전'],
+      ['피버', '코인을 모아 한 번에 돌리면 합체 확률 ↑'],
+      ['합성', '이웃한 레시피 조합 → 합성 (판 끝까지)'],
+      ['챕터', '10분 생존 + 최종 보스 처치 = 클리어'],
     ];
     const bx = 40, by = H * 0.5, bw = W - 80, bh = lines.length * 44 + 24;
     roundRect(ctx, bx, by, bw, bh, 18); ctx.fillStyle = 'rgba(15,8,28,0.85)'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(217,164,65,0.6)'; ctx.stroke();
@@ -3248,7 +3602,7 @@ class UI {
     const stats = [
       ['생존 시간', fmtTime(g.elapsed)], ['레벨', String(g.level)], ['처치', String(g.kills)],
       ['패링 성공', String(g.parries)], ['몬스터 릴', String(g.monsterReels)],
-      ['내 릴 회전', String(g.preel.spins)], ['릴 합체', String(g.preel.merges)],
+      ['릴 합체', String(g.preel.merges)], ['피버 스핀', String(g.preel.fevers)], ['합성', String(g.preel.fusions)],
     ];
     const bw = 420, bx = W / 2 - bw / 2, by = H * 0.37;
     roundRect(ctx, bx, by, bw, stats.length * 48 + 24, 18); ctx.fillStyle = 'rgba(20,10,30,0.9)'; ctx.fill(); ctx.strokeStyle = '#d9a441'; ctx.lineWidth = 2; ctx.stroke();
@@ -3335,10 +3689,15 @@ class Game {
     this.flash = 0; this.flashColor = '255,255,255';
     this.hurtV = 0;
     this.spawnT = 1.2;
-    this.bossT = BAL.boss.first;
+    this.waveIdx = 0; this.midBossDone = false; this.finalBoss = null;
+    this.arena = null;        // 최종 보스 아레나 { x, y, r, t }
+    this.pickups = [];        // 바닥에 흘린 코인
+    this.respawns = [];       // 쓰러진 합성 영웅 부활 대기
+    this.fusionsGot = {};     // 이번 판에 만든 합성 심볼 (처음 만들면 크게 알림)
     this.cards = null;
-    this.deathT = 0; this.overT = 0;
+    this.deathT = 0; this.overT = 0; this.clearT = 0; this.clearDelay = 0;
     this.parryThreat = false; this.threatAny = false; this.parryHintShown = false; this.gaugeHintShown = false; this.coinHintShown = false;
+    this.feverHintShown = false; this.dropHintShown = false;
     this.input.reset();
     this.ui.banners = []; this.ui.flyers = [];
   }
@@ -3392,6 +3751,7 @@ class Game {
   onTap() {
     if (this.state === 'title') { SFX.click(); this.start(); }
     else if (this.state === 'over' && this.overT > 0.8) { SFX.click(); this.start(); }
+    else if (this.state === 'clear' && this.clearT > 1.2) { SFX.click(); this.start(); }
   }
 
   // ---------------------------------------------------------------- 월드
@@ -3444,6 +3804,7 @@ class Game {
     if (this.state === 'title') { this.updateCamera(); return; }
     if (this.state === 'levelup') return;
     if (this.state === 'over') { this.overT += dt; this.fx.update(dt * 0.5); return; }
+    if (this.state === 'clear') { this.clearT += dt; this.fx.update(dt * 0.5); return; }
 
     // 패링 성공 시 1초간 게임 전체 슬로우
     let sdt = dt;
@@ -3468,7 +3829,10 @@ class Game {
     this.reels = this.reels.filter((r) => r.alive);
     this.fx.update(sdt);
     this.preel.update(sdt);
-    if (!p.dead) this.updateSpawner(sdt);
+    this.updatePickups(sdt);
+    this.updateFusions(sdt);
+    if (!p.dead && !this.clearDelay) this.updateSpawner(sdt);
+    if (this.arena) this.arena.t += dt;
     this.updateCamera();
 
     // 특수기 위협 감지 (버튼이 패링으로 전환 / 반짝임 구간 강조)
@@ -3484,6 +3848,10 @@ class Game {
       this.parryHintShown = true;
       this.ui.showHint('✦ 반짝일 때 패링! 성공하면 몬스터 릴', 3.5);
     }
+    if (!this.feverHintShown && this.preel.feverSurplus() > 0) {
+      this.feverHintShown = true;
+      this.ui.showHint('피버 준비! 릴 버튼으로 한 번에 돌리면 합체 확률 ↑', 4);
+    }
     if (this.gauge >= BAL.gauge.max && !this.gaugeHintShown) {
       this.gaugeHintShown = true;
       this.ui.showHint('릴블레이드 충전 완료! 적을 베면 릴 등장', 3.5);
@@ -3492,6 +3860,10 @@ class Game {
     if (p.dead) {
       this.deathT -= dt;
       if (this.deathT <= 0) { this.state = 'over'; this.overT = 0; this.input.reset(); }
+    } else if (this.clearDelay > 0) {
+      // 최종 보스 처치 → 잠깐 연출 후 클리어 화면
+      this.clearDelay -= dt;
+      if (this.clearDelay <= 0) { this.clearDelay = 0; this.state = 'clear'; this.clearT = 0; this.input.reset(); SFX.levelup(); }
     } else if (this.pendingLv > 0 && !this.reelFxBusy()) {
       this.openLevelUp();
     }
@@ -3512,20 +3884,33 @@ class Game {
     this.cam.y = p.y - this.fieldCY;
   }
 
+  // 챕터 진행: 정예 습격 → 5분 중간 보스 → 10분 최종 보스(아레나)
   updateSpawner(dt) {
-    const t = this.elapsed;
-    if (t >= this.bossT) {
-      this.bossT += BAL.boss.every;
-      if (!this.enemies.some((e) => e.boss)) {
-        const a = rand(0, TAU);
-        this.spawnEnemy('boss', this.player.x + Math.cos(a) * 520, this.player.y + Math.sin(a) * 520);
-        this.ui.banner('BOSS 등장! 오우거 족장', '#ff6a5a', 40, 2.4, true);
-        this.shake(10, 0.4);
+    const t = this.elapsed, C = BAL.chapter, p = this.player;
+    if (this.waveIdx < C.eliteWaves.length && t >= C.eliteWaves[this.waveIdx]) {
+      const n = C.eliteCount[this.waveIdx++];
+      const a0 = rand(0, TAU);
+      for (let i = 0; i < n; i++) {
+        const a = a0 + i * TAU / n;
+        const type = t < 200 ? 'goblin' : Math.random() < 0.5 ? 'brute' : 'goblin';
+        this.spawnEnemy(type, p.x + Math.cos(a) * 560, p.y + Math.sin(a) * 560, true);
       }
+      this.ui.banner('정예 습격!', '#ffd24a', 38, 2.0, true);
+      SFX.curse();
     }
+    if (!this.midBossDone && t >= C.midBoss) {
+      this.midBossDone = true;
+      const a = rand(0, TAU);
+      this.spawnEnemy('boss', p.x + Math.cos(a) * 520, p.y + Math.sin(a) * 520);
+      this.ui.banner('BOSS 등장! 오우거 족장', '#ff6a5a', 40, 2.4, true);
+      this.shake(10, 0.4);
+    }
+    if (!this.finalBoss && t >= C.duration) { this.startFinalBoss(); return; }
+
     this.spawnT -= dt;
     if (this.spawnT > 0) return;
     this.spawnT = Math.max(0.35, 1.5 - t * 0.008);
+    if (this.arena) { this.spawnInArena(); return; }
     const maxAlive = Math.min(50, 7 + Math.floor(t / 7));
     if (this.enemies.length >= maxAlive) return;
     const n = 1 + (Math.random() < Math.min(0.6, t / 120) ? randi(1, 3) : 0);
@@ -3539,9 +3924,42 @@ class Game {
     }
   }
 
+  // 10분: 아레나를 닫고 최종 보스 등장. 남아 있던 적은 모두 소멸 (이후 아레나 안에 잡몹이 조금씩)
+  startFinalBoss() {
+    const p = this.player, C = BAL.chapter, W = this.world.w, H = this.world.h;
+    const R = C.arenaR;
+    const x = clamp(p.x, R + 40, W - R - 40), y = clamp(p.y, R + 40, H - R - 40);
+    this.arena = { x, y, r: R, t: 0 };
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      e.alive = false;
+      this.fx.burst(e.x, e.y, '#d8b6ff', 8, 220, 0.5, 4, { z: 30, glow: true, g: -100 });
+    }
+    // 결전 준비: 체력 절반 회복 + 저주 해제
+    p.heal(p.maxHp * 0.5); p.curses = {};
+    this.fx.text(p.x, p.y - 150, '결전 준비! 체력 회복', '#6dff8a', 26, { life: 1.6, vy: -40 });
+    this.fx.burst(p.x, p.y, '#6dff8a', 20, 240, 0.8, 5, { z: 30, glow: true, g: -200 });
+    const a = angleTo(x, y, p.x, p.y) + Math.PI;
+    this.finalBoss = this.spawnEnemy('warlord', x + Math.cos(a) * R * 0.6, y + Math.sin(a) * R * 0.6);
+    this.ui.banner('FINAL BOSS! 오우거 대족장', '#ff4a6a', 42, 3.0, true);
+    this.ui.showHint('아레나에 갇혔다! 패링으로 대족장을 쓰러뜨려라', 4);
+    this.shake(16, 0.6); this.flash = 0.4; this.flashColor = '255,80,90';
+    SFX.curse();
+  }
+
+  // 아레나 안 잡몹 (코인·게이지 공급용, 적게)
+  spawnInArena() {
+    const A = this.arena;
+    if (this.enemies.length >= BAL.chapter.arenaMaxAlive + 1) return;
+    const a = rand(0, TAU), r = A.r * rand(0.75, 0.92);
+    this.spawnEnemy(Math.random() < 0.65 ? 'slime' : 'goblin', A.x + Math.cos(a) * r, A.y + Math.sin(a) * r);
+  }
+
   spawnEnemy(type, x, y, elite = false) {
     const W = this.world.w, H = this.world.h;
-    const e = new Enemy(type, clamp(x, 60, W - 60), clamp(y, 80, H - 60), 1 + this.elapsed / 240, elite);
+    // 적 강화 배율: 5분까지 기존 곡선, 이후 완만하게 (10분 ≈ 3.0배)
+    const t = this.elapsed, scale = 1 + Math.min(t, 300) / 240 + Math.max(0, t - 300) / 400;
+    const e = new Enemy(type, clamp(x, 60, W - 60), clamp(y, 80, H - 60), scale, elite);
     this.enemies.push(e);
     this.fx.portal(e.x, e.y);
     return e;
@@ -3578,6 +3996,12 @@ class Game {
       }
       // 경계 (돌담)
       o.x = clamp(o.x, 24 + o.r, W - 24 - o.r); o.y = clamp(o.y, 14 + o.r, H - 30 - o.r * 0.5);
+      // 최종 보스 아레나: 안쪽에 가둠
+      const A = this.arena;
+      if (A) {
+        const d = dist(o.x, o.y, A.x, A.y), lim = A.r - o.r;
+        if (d > lim && d > 0) { o.x = A.x + (o.x - A.x) / d * lim; o.y = A.y + (o.y - A.y) / d * lim; }
+      }
     }
   }
 
@@ -3619,8 +4043,102 @@ class Game {
     this.gainExp(e.def.exp * (e.elite ? BAL.elite.expMul : 1));
     this.fx.burst(e.x, e.y, e.def.color, e.boss ? 40 : 14, e.boss ? 600 : 360, 0.6, 6, { z: 20 });
     this.fx.burst(e.x, e.y, '#d8b6ff', 6, 200, 0.5, 4, { z: 30, glow: true, g: -100 });
-    if (e.boss) { this.ui.banner('BOSS 처치!', '#ffd24a', 44, 2.2, true); this.shake(14, 0.4); this.flash = 0.3; this.flashColor = '255,230,160'; }
+    if (e.def.final) {
+      // 최종 보스 처치 → 챕터 클리어
+      this.ui.banner('CHAPTER CLEAR!', '#ffd24a', 52, 3.0, true);
+      this.shake(20, 0.6); this.flash = 0.6; this.flashColor = '255,240,180';
+      this.slowmo = 1.5; this.clearDelay = 2.2;
+      this.player.invuln = 99;
+      for (const o of this.enemies) if (o.alive && o !== e) { o.alive = false; this.fx.burst(o.x, o.y, '#d8b6ff', 8, 220, 0.5, 4, { z: 30, glow: true, g: -100 }); }
+    } else if (e.boss) { this.ui.banner('BOSS 처치!', '#ffd24a', 44, 2.2, true); this.shake(14, 0.4); this.flash = 0.3; this.flashColor = '255,230,160'; }
     SFX.kill();
+  }
+
+  // ---------------------------------------------------------------- 피버 / 합성 / 흘린 코인
+  onFever(surplus) {
+    const pct = Math.round(this.preel.fever.bonus * 100);
+    this.ui.banner(`FEVER SPIN! 코인 ${surplus}개 · 합체 +${pct}%`, '#ff7ad8', 34, 2.0, true);
+    this.slowmo = Math.max(this.slowmo, BAL.fever.slow);
+    this.flash = 0.3; this.flashColor = '255,140,230';
+    this.shake(8, 0.3);
+    SFX.levelup();
+  }
+
+  onFusion(id, lvl) {
+    const S = SYMBOLS[id], first = !this.fusionsGot[id];
+    this.fusionsGot[id] = true;
+    this.ui.banner(`${first ? '새 합성! ' : '합성! '}${S.name}${lvl > 1 ? ' Lv' + lvl : ''}`, CAT[S.cat].color, 36, 2.2, true);
+    if (first) this.ui.showHint(`${S.name}: ${S.desc} (판 끝까지)`, 3.5);
+    this.flash = 0.25; this.flashColor = '255,230,150';
+    SFX.merge();
+  }
+
+  // 특수기 피격 → 보유 코인 일부를 주변에 흘림
+  dropCoins() {
+    const R = this.preel, C = BAL.coinDrop, p = this.player;
+    if (R.coins <= 0) return;
+    const n = Math.min(C.max, R.coins, Math.max(1, Math.floor(R.coins * C.ratio)));
+    R.coins -= n;
+    for (let i = 0; i < n; i++) {
+      const a = rand(0, TAU), s = rand(C.speed[0], C.speed[1]);
+      this.pickups.push({ x: p.x, y: p.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s * 0.75, z: 30, vz: rand(260, 380), t: 0, life: C.life });
+    }
+    this.fx.text(p.x, p.y - 150, `코인 -${n}`, '#ffb04a', 24, { life: 1.2, vy: -40 });
+    if (!this.dropHintShown) { this.dropHintShown = true; this.ui.showHint('특수기에 맞으면 코인을 흘린다! 주워서 회수', 3.5); }
+  }
+
+  updatePickups(dt) {
+    const p = this.player, C = BAL.coinDrop;
+    for (const c of this.pickups) {
+      c.t += dt;
+      c.x += c.vx * dt; c.y += c.vy * dt;
+      const k = Math.max(0, 1 - 4 * dt); c.vx *= k; c.vy *= k;
+      if (c.z > 0 || c.vz > 0) { c.vz -= 1200 * dt; c.z = Math.max(0, c.z + c.vz * dt); if (c.z === 0) c.vz = c.vz < -150 ? -c.vz * 0.35 : 0; }
+      if (this.arena) {
+        const A = this.arena, d = dist(c.x, c.y, A.x, A.y);
+        if (d > A.r - 16) { c.x = A.x + (c.x - A.x) / d * (A.r - 16); c.y = A.y + (c.y - A.y) / d * (A.r - 16); }
+      }
+      if (!p.dead && c.t > 0.45 && dist2(c.x, c.y, p.x, p.y) < (C.pickR + p.r) ** 2) {
+        c.done = true;
+        this.preel.addCoins(1);
+        this.fx.burst(c.x, c.y, '#ffd84a', 6, 160, 0.35, 4, { z: 20, glow: true, g: -120 });
+      } else if (c.t >= c.life) c.done = true;
+    }
+    this.pickups = this.pickups.filter((c) => !c.done);
+  }
+
+  // 합성 심볼 지속 효과 (혜성 주기 낙하, 합성 영웅 부활)
+  updateFusions(dt) {
+    const p = this.player;
+    if (p.dead) return;
+    const cm = p.fusions.comet;
+    if (cm) {
+      cm.t -= dt;
+      if (cm.t <= 0) {
+        cm.t = cm.max = Math.max(4, BAL.fusion.cometCD - cm.lvl);
+        let best = null, bestN = -1;
+        for (const e of this.enemies) {
+          if (!e.alive || e.state === 'spawn' || dist2(e.x, e.y, p.x, p.y) > 600 * 600) continue;
+          let n = 0;
+          for (const o of this.enemies) if (o.alive && dist2(o.x, o.y, e.x, e.y) < 150 * 150) n++;
+          if (e.boss) n += 3;
+          if (n > bestN) { bestN = n; best = e; }
+        }
+        if (best) {
+          this.projectiles.push(new Projectile({ kind: 'meteor', x: best.x, y: best.y, tx: best.x, ty: best.y, dur: 0.8, R: 150 + 10 * cm.lvl, dmg: 70 + p.atkPower * (2 + 0.4 * cm.lvl), freeze: 1.6 + 0.3 * cm.lvl }));
+          SFX.summon();
+        } else cm.t = 1;
+      }
+    }
+    for (const r of this.respawns) {
+      r.t -= dt;
+      if (r.t <= 0) {
+        r.done = true;
+        this.landHero(r.id, r.lvl, p.x + (Math.random() < 0.5 ? -86 : 86), p.y + 16);
+        this.fx.text(p.x, p.y - 150, HERO_TYPES[r.id].name + ' 부활!', '#ffe08a', 24, { life: 1.4, vy: -40 });
+      }
+    }
+    this.respawns = this.respawns.filter((r) => !r.done);
   }
 
   enemyHit(e, tgt, dmg) {
@@ -3631,7 +4149,7 @@ class Game {
   // 영웅 피격 (체력 0 → 쓰러짐)
   damageHero(h, dmg, o = {}) {
     if (!h.alive || !h.landed) return;
-    dmg = Math.max(1, Math.round(dmg * (h.type === 'knight' ? 0.75 : 1))); // 기사는 피해 25% 감소
+    dmg = Math.max(1, Math.round(dmg * (h.base === 'knight' ? 0.75 : 1))); // 기사(성기사 포함)는 피해 25% 감소
     h.hp -= dmg;
     h.hurtFlash = 0.12;
     this.fx.text(h.x, h.y - 104, '-' + dmg, '#ff8a6a', o.heavy ? 26 : 20);
@@ -3643,6 +4161,7 @@ class Game {
       this.fx.burst(h.x, h.y, '#ffd24a', 10, 220, 0.6, 4, { z: 40, glow: true, g: -120 });
       this.fx.add({ type: 'decal', x: h.x, y: h.y, r: 26, life: 2, layer: 'ground' });
       SFX.miss();
+      if (h.permanent) this.respawns.push({ id: h.type, lvl: h.lvl, t: BAL.fusion.respawn }); // 합성 영웅은 잠시 뒤 부활
     }
   }
 
@@ -3663,7 +4182,7 @@ class Game {
 
   damagePlayer(dmg, src, o = {}) {
     const p = this.player;
-    if (p.dead || (p.invuln > 0 && !o.pure)) return;
+    if (p.dead || (p.invuln > 0 && !o.pure) || this.clearDelay > 0) return; // 클리어 연출 중엔 피해 없음
     if (!o.pure) dmg *= 1 - Math.min(0.5, p.mods.guard);
     dmg = Math.max(1, Math.round(dmg));
     if (p.shield > 0 && !o.pure) {
@@ -3838,7 +4357,8 @@ class Game {
     if (h) { h.lvl = Math.min(5, h.lvl + lvl); h.maxHp = h.hpFor(h.lvl); h.hp = h.maxHp; } // 재소환 시 레벨업 + 체력 회복
     else { h = new Hero(id, x, y, Math.min(5, lvl)); this.heroes.push(h); }
     h.x = x; h.y = y; h.target = null;
-    h.life = h.maxLife = BAL.heroDur + (lvl - 1) * 5;
+    if (SYMBOLS[id].fusion) h.permanent = true; // 합성 영웅: 판 끝까지
+    h.life = h.maxLife = h.permanent ? Infinity : BAL.heroDur + (lvl - 1) * 5;
     h.dropT = h.dropMax = 0.28;
     SFX.summon();
   }
@@ -3868,6 +4388,14 @@ class Game {
   // 플레이어 릴 심볼 적용 (같은 심볼을 다시 얻으면 강화)
   applySymbol(id, count) {
     const S = SYMBOLS[id], p = this.player;
+    if (S.fusion) {
+      // 합성 공격·스킬: 판 끝까지 지속, 다시 얻으면 Lv 상승
+      const old = p.fusions[id];
+      const lvl = Math.min(5, (old ? old.lvl : 0) + count);
+      p.fusions[id] = id === 'comet' ? { lvl, t: old ? old.t : 1.2, max: BAL.fusion.cometCD } : { lvl };
+      this.fx.ring(p.x, p.y, 10, 110, 0.5, CAT[S.cat].color, 8, true);
+      return;
+    }
     switch (S.cat) {
       case 'attack': {
         const old = p.abilities[id];
@@ -3970,12 +4498,15 @@ class Game {
     }
   }
 
+  // 성장 카드 3장: 첫 장은 항상 릴 편집 카드(추가·제거·강화·황금), 나머지는 전체에서
   openLevelUp() {
     this.state = 'levelup';
     this.input.reset();
-    const pool = CARDS.slice();
+    const reel = reelEditCards(this);
     const chosen = [];
-    for (let i = 0; i < 3 && pool.length; i++) {
+    if (reel.length) { const c = weightedPick(reel, (x) => x.weight(this)); chosen.push(c); reel.splice(reel.indexOf(c), 1); }
+    const pool = CARDS.concat(reel);
+    for (let i = chosen.length; i < 3 && pool.length; i++) {
       const c = weightedPick(pool, (x) => x.weight(this));
       if (c.weight(this) <= 0) break;
       chosen.push(c);
@@ -4025,7 +4556,9 @@ class Game {
     ART.drawWalls(ctx, this.world, vx0, vy0, vx1, vy1, 'back');
 
     for (const d of this.world.decals) if (d.x > vx0 && d.x < vx1 && d.y > vy0 && d.y < vy1) ART.drawDecal(ctx, d);
+    if (this.arena) ART.drawArena(ctx, this.arena, this.time);
     this.fx.draw(ctx, 'ground');
+    for (const c of this.pickups) ART.drawCoinPickup(ctx, c, this.time);
     for (const e of this.enemies) {
       if (e.elite || e.boss) ART.drawEliteAura(ctx, e, this.time);
       if (e.state === 'special') ART.dangerZone(ctx, e);
